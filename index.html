@@ -685,23 +685,26 @@ const sfx = (() => {
       voice({ m: root(), type: 'sine', dur: 0.04, r: 0.35, vol: 0.26 + k * 0.08, det: 0, send: 0 });
       voice({ m: root() + 12, type: 'triangle', dur: 0.02, r: 0.15, vol: 0.08, det: 0, send: 0 });
     },
-    // NOVA arrives: a high, glassy chord shimmer.
-    novaArrive() {
-      chord(notes(cur(), 84, 4), { type: 'sine', dur: 0.02, r: 0.7, vol: 0.032, det: 0, strum: 0.06, send: 0.8, spread: 0.9 });
+    // Line burst: a sub note on the chord root, a swelling chord and a soft filtered air-burst —
+    // all from the current chord, so it sits inside the music. k = power 0…1.
+    burst(k = 0.5) {
+      voice({ m: Math.max(28, root() - 12), type: 'sine', dur: 0.08 + 0.2 * k, r: 0.5 + 0.7 * k, vol: 0.16 + 0.16 * k, det: 0, glide: 0.5, send: 0 });
+      chord(notes(cur(), 50, 3 + Math.round(3 * k)), { ...pad, a: 0.006, dur: 0.12 + 0.3 * k, r: 0.6 + 0.8 * k, vol: 0.045, cut: 2200 + 3000 * k, cutEnd: 260, q: 7, send: 0.55, spread: 0.8 });
+      chord(notes(cur(), 74, 2 + Math.round(3 * k)), { type: 'triangle', at: 0.03, dur: 0.01, r: 0.4, vol: 0.026, det: 0, strum: 0.035, send: 0.65, spread: 0.9 });
+      noise({ dur: 0.25 + 0.4 * k, vol: 0.03 + 0.05 * k, f0: 3200, f1: 180, q: 0.8, send: 0.35 });
     },
-    // NOVA detonates: sub boom, a filtered noise sweep, a huge pad and a racing arpeggio up the chord.
-    nova(k = 1) {                            // k: blast size 0.2…1 — bigger blasts are deeper, longer and wider
-      voice({ m: Math.max(26, root() - 12), type: 'sine', dur: 0.15 + 0.2 * k, r: 0.6 + 0.8 * k, vol: 0.18 + 0.18 * k, det: 0, glide: 0.5, send: 0 });
-      noise({ dur: 0.4 + 0.7 * k, vol: 0.07 + 0.1 * k, f0: 7000, f1: 110, q: 0.7, send: 0.45 });
-      chord(notes(cur(), 48, 3 + Math.round(3 * k)), { ...pad, a: 0.01, dur: 0.2 + 0.35 * k, r: 0.7 + 0.9 * k, vol: 0.05, cut: 2600 + 2800 * k, cutEnd: 280, q: 8, send: 0.6, spread: 0.8 });
-      chord(notes(cur(), 67, 4 + Math.round(7 * k)), { type: 'triangle', at: 0.04, dur: 0.02, r: 0.35, vol: 0.028, det: 0, strum: 0.042, send: 0.7, spread: 0.9 });
+    // Shrapnel impact i: a short "pop" voiced on a chord tone; successive hits climb the chord,
+    // so a big blast plays as a quick in-key run instead of noise.
+    impact(i) {
+      if (!ac || muted) return;
+      const t = ac.currentTime;
+      if (t - (this._lastHit || 0) < 0.03) return;   // keep dense volleys from smearing
+      this._lastHit = t;
+      const ns = notes(cur(), 62, 8), m = ns[(i - 1) % ns.length];
+      voice({ m, type: 'triangle', dur: 0.006, r: 0.16, vol: 0.034, det: 4, cut: 3800, cutEnd: 600, send: 0.35, pan: (Math.random() - 0.5) * 1.2 });
+      voice({ m: m - 12, type: 'sine', dur: 0.01, r: 0.12, vol: 0.05, det: 0, glide: 0.7, send: 0 });
     },
-    // Blocks shattering as the wave passes: soft high chord-tone pings.
-    shatter(i) {
-      const ns = notes(cur(), 79, 6);
-      voice({ m: ns[Math.floor(i) % ns.length], type: 'triangle', dur: 0.004, r: 0.12, vol: 0.02, det: 0, send: 0.4, pan: (Math.random() - 0.5) * 1.4 });
-    },
-    // Mirror: a quick two-way shimmer of chord tones sweeping across the stereo field.
+    // Mirror: a quick two-way shimmer    // Mirror: a quick two-way shimmer of chord tones sweeping across the stereo field.
     mirror() {
       const ns = notes(cur(), 76, 3);
       chord(ns, { type: 'triangle', dur: 0.008, r: 0.12, vol: 0.03, det: 4, strum: 0.022, send: 0.3, spread: -0.7 });
@@ -823,7 +826,7 @@ const fmtTime = t => { t = Math.floor(t); return `${Math.floor(t / 60)}:${String
 
 function emptyBoard() { return Array.from({ length: TOTAL }, () => new Array(COLS).fill(null)); }
 board = emptyBoard(); queue = []; hold = null; canHold = true; score = 0; lines = 0; level = 1;
-let blast = null, particles = [], flash = 0;
+let boom = null, shards = [], particles = [], flash = 0;
 
 // Copies of each shape per bag, by size: tetrominoes (medium) are the most common,
 // pentominoes (large) less so, trominoes (small) rarest. 5×3 + 12×1 + 2×1 = 29 pieces per bag.
@@ -843,39 +846,14 @@ function nextType() {
   return (lastType = bag.pop());
 }
 // Queue entries are { t: type, g: true if it's a glowing NOVA piece }.
-function refill() { while (queue.length < 6) queue.push({ t: nextType(), g: rollNova() }); }
-// NOVA odds: a small chance per piece that grows with how full the board is
-// (~1 in 50 on an empty board, ~1 in 18 at 30% full, ~1 in 12 when packed), never closer than 6 apart.
-let sinceNova = 0;
-const NOVA_MIN_GAP = 6, NOVA_STEP = 0.045;  // ripple speed: seconds per cell of radius
+function refill() { while (queue.length < 6) queue.push({ t: nextType(), g: false }); }
 function stackHeight() { for (let r = 0; r < TOTAL; r++) if (board[r].some(Boolean)) return TOTAL - r; return 0; }
 function fillRatio() {
   let n = 0;
   for (let r = HIDDEN; r < TOTAL; r++) for (const v of board[r]) if (v) n++;
   return n / (COLS * ROWS);
 }
-function rollNova() {
-  sinceNova++;
-  if (sinceNova < NOVA_MIN_GAP) return false;
-  const p = 0.02 + 0.24 * Math.pow(fillRatio(), 1.1);
-  if (Math.random() >= p) return false;
-  sinceNova = 0;
-  return true;
-}
-// Blast size scales with contact: the more pieces (and blocks) a NOVA touches where it lands,
-// the bigger the radius — a nova on bare floor fizzles, one buried in the stack is huge.
-function novaContacts(cells) {               // cells: absolute [x, y] where the nova will sit
-  const own = new Set(cells.map(([x, y]) => y * 64 + x)), ids = new Set();
-  let n = 0;
-  for (const [x, y] of cells) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-    const nx = x + dx, ny = y + dy;
-    if (own.has(ny * 64 + nx) || nx < 0 || nx >= COLS || ny < 0 || ny >= TOTAL) continue;
-    const v = board[ny][nx];
-    if (v) { n++; ids.add(v.id); }
-  }
-  return { pieces: ids.size, cells: n };
-}
-const novaRadius = c => Math.min(7.5, 1.6 + 0.85 * c.pieces + 0.12 * c.cells);
+
 
 // Board cells are { t: type, id: piece number, o: visual fall offset in rows }.
 const cellsOf = p => ROT[p.type][p.mir][p.rot];
@@ -889,13 +867,15 @@ function collide(cells, x, y) {
 }
 const grounded = () => piece && collide(cellsOf(piece), piece.x, piece.y + 1);
 function dropDistance() { const c = cellsOf(piece); let d = 0; while (!collide(c, piece.x, piece.y + d + 1)) d++; return d; }
-// Slow, gentle curve: 1.45 s per row at level 1, about 15% faster each level.
-const gravity = lv => Math.max(0.03, 1.45 * Math.pow(0.85, Math.min(lv, 25) - 1));
+// Gradual speed-up: 1.45 s per row at the start, ~12% faster every 10 lines, rising a little
+// with every single line (not in steps at each level). Marathon stops speeding up at its level cap.
+const gravity = lv => Math.max(0.03, 1.45 * Math.pow(0.88, Math.min(lv, 30) - 1));
+const speedLevel = () => (mode === 'marathon' && level >= MAX_MARATHON_LEVEL) ? level : 1 + lines / 10;
 
 function reset() {
   board = emptyBoard(); bag = []; queue = [];
   hold = null; canHold = true; score = 0; shownScore = 0; lines = 0; level = 1; combo = -1; b2b = false;
-  sinceNova = 2; blast = null; particles = []; flash = 0; lastType = null;
+  boom = null; shards = []; pops = []; particles = []; flash = 0; lastType = null;
   refill();
   clearing = null; pendingRows = null; chain = 0; waitT = 0; trails = []; popups = []; lockFlash = null; kick = 0; mirAnim = 0;
   softHeld = false; held = { '-1': false, '1': false }; activeDir = 0; overT = 0; overShown = false;
@@ -905,8 +885,6 @@ function reset() {
 function spawn(entry) {
   if (!entry) {
     entry = queue.shift(); refill();
-    // In real danger, light up a preview so help is visibly on its way.
-    if (stackHeight() > ROWS * 0.62 && sinceNova >= NOVA_MIN_GAP && !queue.slice(0, 4).some(e => e.g)) { queue[3].g = true; sinceNova = 0; }
   }
   const type = entry.t, nova = !!entry.g;
   const n = SHAPES[type].length, x = Math.floor((COLS - n) / 2);
@@ -914,7 +892,6 @@ function spawn(entry) {
   let y = HIDDEN - maxY;
   if (collide(cells, x, y)) { if (!collide(cells, x, y - 1)) y--; else { piece = null; gameOver(); return; } }
   piece = { type, rot: 0, mir: 0, x, y, rx: x, ry: y - 0.6, nova };
-  if (nova) sfx.novaArrive();
   dropT = 0; lockT = 0; lockResets = 0; lowestY = piece.y; rotAnim = 0; mirAnim = 0;
   minisDirty = true;
 }
@@ -977,7 +954,6 @@ function doHold() {
 
 function lock(hard) {
   let above = true; const cells = [], id = ++pieceId;
-  const contacts = piece.nova ? novaContacts(cellsOf(piece).map(([cx, cy]) => [piece.x + cx, piece.y + cy])) : null;
   for (const [cx, cy] of cellsOf(piece)) {
     const bx = piece.x + cx, by = piece.y + cy;
     if (by >= 0) board[by][bx] = { t: piece.type, id, o: 0 };
@@ -985,9 +961,7 @@ function lock(hard) {
     cells.push([bx, by]);
   }
   lockFlash = { cells, t: 0.18 };
-  const wasNova = piece.nova;
   piece = null; canHold = true; minisDirty = true;
-  if (wasNova) { combo++; chain = 1; startBlast(cells, contacts); return; }   // a NOVA can even save a top-out
   if (above) { gameOver(); return; }
 
   const full = fullRows();
@@ -1072,70 +1046,93 @@ function settle() {
   }
 }
 
-/* ---------- NOVA blast: a shockwave that ripples out and destroys every block in range ---------- */
-function startBlast(cells, contacts) {
-  const R = novaRadius(contacts), k = R / 7.5;   // k: 0.2 (fizzle) … 1 (maximum)
-  const pts = cells.filter(([, y]) => y >= 0);
-  const cx = pts.reduce((a, [x]) => a + x, 0) / pts.length + 0.5;
-  const cy = pts.reduce((a, [, y]) => a + y, 0) / pts.length + 0.5;
-  const targets = [];
-  for (let r = 0; r < TOTAL; r++) for (let c = 0; c < COLS; c++) {
-    if (!board[r][c]) continue;
-    const d = Math.hypot(c + 0.5 - cx, r + 0.5 - cy);
-    if (d <= R) targets.push({ r, c, d });
-  }
-  targets.sort((a, b) => a.d - b.d);
-  blast = { cx, cy, R, t: 0, targets, idx: 0, end: R * NOVA_STEP + 0.3, count: 0, pieces: contacts.pieces };
-  flash = 0.4 + 0.6 * k; kick = Math.min(14, cell * 0.45) * (0.35 + 0.65 * k);
-  sfx.nova(k); rumble(0.4 + 0.6 * k, 0.4 + 0.6 * k, 300 + 400 * k);
-  for (let i = 0; i < 12 + 40 * k; i++) {  // initial core burst
-    const a = Math.random() * Math.PI * 2, v = 4 + Math.random() * 10;
-    particles.push({ x: cx, y: cy, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0, life: 0.5 + Math.random() * 0.5, hue: Math.random() * 360, s: 0.18 + Math.random() * 0.2, g: 0 });
+/* ---------- Explosive line clears ----------
+   When rows clear they burst. Power grows with the number of rows cleared (and with the cascade
+   chain): more shards, flung faster, with wider impacts. Each shard flies under gravity and,
+   when it strikes a block, sets off a minor explosion that destroys the blocks around it.
+   When the shrapnel has settled, fragments fall and any newly full rows explode in turn. */
+const SHARD_G = 22;                          // shard gravity, cells/s²
+const boomPower = (n, ch) => n + (ch - 1) * 0.75;
+function sparks(x, y, color, count, speed) {   // visual-only particles (board coordinates)
+  for (let i = 0; i < count && particles.length < 900; i++) {
+    const a = Math.random() * Math.PI * 2, v = speed * (0.35 + Math.random() * 0.65);
+    particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - speed * 0.25, t: 0, life: 0.35 + Math.random() * 0.45,
+      color, s: 0.1 + Math.random() * 0.16, g: 16 });
   }
 }
-function burst(c, r, color) {
-  if (particles.length > 700) return;
-  const dx = c + 0.5 - blast.cx, dy = r + 0.5 - blast.cy, dl = Math.hypot(dx, dy) || 1;
-  for (let i = 0; i < 7; i++) {
-    const a = Math.random() * Math.PI * 2, v = 1.5 + Math.random() * 5;
-    particles.push({ x: c + 0.5, y: r + 0.5, vx: Math.cos(a) * v + dx / dl * 5, vy: Math.sin(a) * v + dy / dl * 5 - 2,
-      t: 0, life: 0.45 + Math.random() * 0.5, color, s: 0.12 + Math.random() * 0.18, g: 14 });
+function startBoom(rows, cellsByRow, n) {
+  const P = boomPower(n, chain), k = Math.min(1, P / 5);
+  const count = Math.round([0, 2, 5, 8, 12, 16][Math.min(n, 5)] + (n > 5 ? (n - 5) * 3 : 0) + (chain - 1) * 2);
+  const radius = 1.15 + 0.14 * Math.min(P, 6);  // impact radius in cells
+  const src = [];
+  rows.forEach(r => cellsByRow[r].forEach((v, c) => { if (v) src.push({ r, c, color: COLORS[v.t] }); }));
+  for (const q of src) sparks(q.c + 0.5, q.r + 0.5, q.color, 3 + Math.round(3 * k), 6 + 6 * k);   // every block bursts
+  for (let i = 0; i < count && src.length; i++) {
+    const q = src[Math.random() * src.length | 0];
+    const up = Math.random() < 0.7;                // most shrapnel flies upward into the stack above
+    const a = up ? -Math.PI / 2 + (Math.random() - 0.5) * 2.4 : Math.PI / 2 + (Math.random() - 0.5) * 2.2;
+    const v = 7 + Math.random() * 6 + 4 * k;
+    shards.push({ x: q.c + 0.5, y: q.r + 0.5, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0, color: q.color, trail: [] });
   }
+  boom = { t: 0, radius, hits: 0, destroyed: 0, n, P };
+  flash = Math.max(flash, 0.25 + 0.6 * k); kick = Math.min(16, cell * (0.12 + 0.4 * k));
+  sfx.burst(k); rumble(0.3 + 0.7 * k, 0.4 + 0.6 * k, 160 + 360 * k);
 }
-function updateBlast(dt) {
-  blast.t += dt;
-  const T = blast.targets;
-  while (blast.idx < T.length && T[blast.idx].d * NOVA_STEP <= blast.t) {
-    const { r, c } = T[blast.idx++], v = board[r][c];
-    if (v) { board[r][c] = null; blast.count++; burst(c, r, COLORS[v.t]); if (blast.count % 6 === 0) sfx.shatter(blast.count / 6); }
+function detonate(x, y, color) {               // a shard's minor explosion
+  let killed = 0;
+  const R = boom.radius, r0 = Math.floor(y - R), r1 = Math.floor(y + R), c0 = Math.floor(x - R), c1 = Math.floor(x + R);
+  for (let r = Math.max(0, r0); r <= Math.min(TOTAL - 1, r1); r++)
+    for (let c = Math.max(0, c0); c <= Math.min(COLS - 1, c1); c++) {
+      const v = board[r][c];
+      if (v && Math.hypot(c + 0.5 - x, r + 0.5 - y) <= R) { board[r][c] = null; killed++; sparks(c + 0.5, r + 0.5, COLORS[v.t], 4, 7); }
+    }
+  sparks(x, y, '#ffffff', 6, 9);
+  boom.hits++; boom.destroyed += killed;
+  pops.push({ x, y, t: 0, r: R, color });
+  sfx.impact(boom.hits);
+  rumble(0.15, 0.25, 40);
+}
+let pops = [];                                 // expanding rings for minor explosions (visual)
+function updateBoom(dt) {
+  boom.t += dt;
+  for (const sh of shards) {
+    if (sh.dead) continue;
+    sh.t += dt;
+    const steps = 3;
+    for (let i = 0; i < steps && !sh.dead; i++) {
+      const h = dt / steps;
+      sh.vy += SHARD_G * h; sh.x += sh.vx * h; sh.y += sh.vy * h;
+      const c = Math.floor(sh.x), r = Math.floor(sh.y);
+      if (sh.x < 0 || sh.x >= COLS || sh.y >= TOTAL || sh.t > 1.6) { sh.dead = true; break; }   // left the well
+      if (r >= 0 && board[r][c]) { sh.dead = true; detonate(sh.x, sh.y, sh.color); }
+    }
+    sh.trail.push([sh.x, sh.y]); if (sh.trail.length > 7) sh.trail.shift();
   }
-  if (blast.t >= blast.end) finishBlast();
+  shards = shards.filter(sh => !sh.dead || false);
+  if (!shards.length && boom.t > 0.25) finishBoom();
 }
-function finishBlast() {
-  const n = blast.count, pts = 25 * n * level;
-  score += pts;
-  for (const q of popups) q.t = Math.max(q.t, q.life * 0.9);
-  const linked = blast.pieces;
-  popups.push({ text: linked >= 5 ? 'Supernova' : 'Nova', sub: `${linked} linked · ${n} blocks · +${pts.toLocaleString()}`, t: 0, life: 1.4, big: true });
-  blast = null;
-  settle();                                 // fragments fall…
+function finishBoom() {
+  const { destroyed, n } = boom;
+  if (destroyed) {
+    const pts = 15 * destroyed * level;
+    score += pts;
+    popups.push({ text: n >= 4 ? 'Shockwave' : 'Shrapnel', sub: `${destroyed} blocks shattered · +${pts.toLocaleString()}`, t: -0.15, life: 1.2, big: false });
+  }
+  boom = null;
+  settle();                                    // fragments fall…
   const full = fullRows();
-  if (full.length) { chain++; pendingRows = full; waitT = 0.15; return; }   // …and may chain-clear rows
+  if (full.length) { chain++; pendingRows = full; waitT = 0.12; return; }   // …and newly full rows explode too
   chain = 0;
   if (mode === 'marathon' && lines >= GOAL) { win(); return; }
   spawn();
 }
 
 function finishClear() {
-  // Remove the cleared rows' cells, then let everything above settle as fragments.
-  for (const r of clearing) board[r].fill(null);
+  // The cleared rows burst: their blocks become sparks and shrapnel, then the shrapnel resolves.
+  const rows = clearing, snap = {};
+  for (const r of rows) { snap[r] = board[r].slice(); board[r].fill(null); }
   clearing = null;
-  settle();
-  const full = fullRows();
-  if (full.length) { chain++; pendingRows = full; waitT = 0.12; return; }   // cascade!
-  chain = 0;
-  if (mode === 'marathon' && lines >= GOAL) { win(); return; }
-  spawn();
+  startBoom(rows, snap, rows.length);
 }
 function maxFall() {
   let m = 0;
@@ -1198,10 +1195,10 @@ function showOverlay(kind) {
     ovPrimary.textContent = 'Marathon · 150 lines';
     ovSecondary.textContent = 'Endless'; ovSecondary.hidden = false;
     ovHint.innerHTML = padActive
-      ? '<b>A</b> Marathon · <b>Y</b> Endless · <b>◀ ▶</b> well width<br>Glowing <b>novas</b> explode — bury them deep: the more they touch, the bigger the blast'
+      ? '<b>A</b> Marathon · <b>Y</b> Endless · <b>◀ ▶</b> well width<br>Line clears <b>explode</b> — more lines, bigger blast; shrapnel shatters the stack, then it cascades'
       : isTouchUI()
-      ? 'Swipe to move · Tap to rotate<br>Flick down to drop · Flick up to hold<br>Glowing <b>novas</b> explode — bury them deep: the more they touch, the bigger the blast'
-      : `<b>Enter</b> Marathon · <b>E</b> Endless · <b>← →</b> well width<br>${controlsHint()}<br>Glowing <b>novas</b> explode — bury them deep: the more they touch, the bigger the blast`;
+      ? 'Swipe to move · Tap to rotate<br>Flick down to drop · Flick up to hold<br>Line clears <b>explode</b> — more lines, bigger blast; shrapnel shatters the stack, then it cascades'
+      : `<b>Enter</b> Marathon · <b>E</b> Endless · <b>← →</b> well width<br>${controlsHint()}<br>Line clears <b>explode</b> — more lines, bigger blast; shrapnel shatters the stack, then it cascades`;
   } else if (kind === 'pause') {
     ovTitle.textContent = 'PAUSED'; ovSub.textContent = 'Take a breath.';
     ovPrimary.textContent = 'Resume'; ovSecondary.textContent = 'Restart'; ovSecondary.hidden = false;
@@ -1571,7 +1568,7 @@ if ('ResizeObserver' in window) new ResizeObserver(() => layout()).observe(docum
 function update(dt) {
   if (state !== 'play') return;
   playTime += dt;
-  if (blast) { updateBlast(dt); return; }
+  if (boom) { updateBoom(dt); return; }
   if (clearing) { clearT -= dt; if (clearT <= 0) finishClear(); return; }
   if (pendingRows) {                       // wait for falling fragments to land, then clear again
     waitT -= dt;
@@ -1590,7 +1587,7 @@ function update(dt) {
   }
 
   // Gravity
-  const g = gravity(level), interval = softHeld ? Math.min(g, SOFT) : g;
+  const g = gravity(speedLevel()), interval = softHeld ? Math.min(g, SOFT) : g;
   dropT += dt;
   while (dropT >= interval) {
     dropT -= interval;
@@ -1619,14 +1616,7 @@ function animate(dt) {
   for (const q of particles) { q.t += dt; q.x += q.vx * dt; q.y += q.vy * dt; q.vy += q.g * dt; q.vx *= 0.985; }
   particles = particles.filter(q => q.t < q.life);
   flash = Math.max(0, flash - dt * 2.6);
-  if (piece && piece.nova && particles.length < 500) {     // prismatic sparkles drifting off a NOVA
-    const cs = cellsOf(piece);
-    for (let i = 0; i < 2; i++) {
-      const [x, y] = cs[Math.random() * cs.length | 0];
-      particles.push({ x: piece.rx + x + Math.random(), y: piece.ry + y + Math.random(), vx: (Math.random() - 0.5) * 1.2, vy: -0.8 - Math.random() * 1.2,
-        t: 0, life: 0.5 + Math.random() * 0.5, hue: (now() * 140 + Math.random() * 60) % 360, s: 0.08 + Math.random() * 0.1, g: 0 });
-    }
-  }
+  for (const q of pops) q.t += dt; pops = pops.filter(q => q.t < 0.35);
   if ((hold && hold.g) || queue.slice(0, nextN).some(e => e.g)) minisDirty = true;
   for (const p of popups) p.t += dt; popups = popups.filter(p => p.t < p.life);
   if (lockFlash) { lockFlash.t -= dt; if (lockFlash.t <= 0) lockFlash = null; }
@@ -1748,29 +1738,6 @@ function draw() {
         } else ctx.drawImage(gs, (piece.x + cx) * cell, sy, cell, cell);
       });
     }
-    if (piece.nova) {                        // predicted blast for this landing spot, with the contact count
-      const cs = cellsOf(piece), mx = cs.reduce((a, [x]) => a + x, 0) / cs.length + 0.5, my = cs.reduce((a, [, y]) => a + y, 0) / cs.length + 0.5;
-      const c = novaContacts(cs.map(([x, y]) => [piece.x + x, piece.y + gd + y])), R = novaRadius(c);
-      const X = (piece.x + mx) * cell, Y = (piece.y + gd + my - HIDDEN) * cell, h = (now() * 90) % 360;
-      ctx.save();
-      ctx.fillStyle = `hsla(${h},100%,65%,${0.04 + 0.03 * Math.sin(now() * 4)})`;
-      ctx.beginPath(); ctx.arc(X, Y, R * cell, 0, Math.PI * 2); ctx.fill();
-      ctx.setLineDash([cell * 0.25, cell * 0.3]); ctx.lineWidth = 1.4;
-      ctx.strokeStyle = `hsla(${h},100%,72%,${0.35 + 0.15 * Math.sin(now() * 4)})`; ctx.stroke();
-      // Label on a small pill anchored to the landing outline: above it while the piece is
-      // still high, below it once the piece is close (so the falling piece never covers it).
-      const ys = cs.map(([, y]) => piece.y + gd + y - HIDDEN), top = Math.min(...ys) * cell, bot = (Math.max(...ys) + 1) * cell;
-      const fs = Math.max(10, cell * 0.4), txt = c.pieces ? `✦ ${c.pieces} linked · blast ${R.toFixed(1)}` : '✦ touch pieces to grow';
-      ctx.setLineDash([]); ctx.font = `700 ${fs}px ${getComputedStyle(document.body).fontFamily}`;
-      const tw = ctx.measureText(txt).width + fs, th = fs * 1.6;
-      let ly = gd >= 3 ? top - th - 4 : bot + 4;
-      ly = clamp(ly, 2, bh - th - 2);
-      const lx = clamp(X - tw / 2, 2, bw - tw - 2);
-      ctx.fillStyle = 'rgba(8,8,10,.72)'; rr(ctx, lx, ly, tw, th, th / 2); ctx.fill();
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = `hsla(${h},100%,80%,.95)`;
-      ctx.fillText(txt, lx + tw / 2, ly + th / 2 + 0.5);
-      ctx.restore();
-    }
     // Active piece with smooth translation + rotation
     const n = SHAPES[piece.type].length, sp = sprite(piece.type, size);
     const ox = piece.rx * cell, oy = (piece.ry - HIDDEN) * cell;
@@ -1799,16 +1766,31 @@ function draw() {
     ctx.restore();
   }
 
-  // NOVA shockwave, particles and flash
-  if (blast) {
-    const R = Math.min(blast.R, blast.t / NOVA_STEP) * cell, a = Math.max(0, 1 - blast.t / blast.end);
-    const x = blast.cx * cell, y = (blast.cy - HIDDEN) * cell;
+  // Explosions: impact rings, glowing shrapnel with trails
+  if (pops.length || shards.length) {
     ctx.save(); ctx.globalCompositeOperation = 'lighter';
-    const g = ctx.createRadialGradient(x, y, Math.max(0, R - cell * 1.6), x, y, R + 1);
-    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.75, `hsla(${(now() * 200) % 360},100%,70%,${0.35 * a})`); g.addColorStop(1, `rgba(255,255,255,${0.8 * a})`);
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, R + 1, 0, Math.PI * 2); ctx.fill();
-    ctx.lineWidth = Math.max(2, cell * 0.12); ctx.strokeStyle = `rgba(255,255,255,${0.9 * a})`;
-    ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.stroke();
+    for (const q of pops) {
+      const u = q.t / 0.35, R = (0.3 + u * q.r) * cell, x = q.x * cell, y = (q.y - HIDDEN) * cell;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, R);
+      g.addColorStop(0, `rgba(255,255,255,${0.55 * (1 - u)})`); g.addColorStop(0.6, rgba(q.color, 0.35 * (1 - u))); g.addColorStop(1, rgba(q.color, 0));
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = Math.max(1.5, cell * 0.08); ctx.strokeStyle = `rgba(255,255,255,${0.7 * (1 - u)})`;
+      ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.stroke();
+    }
+    for (const sh of shards) {
+      if (sh.trail.length > 1) {
+        ctx.lineCap = 'round';
+        for (let i = 1; i < sh.trail.length; i++) {
+          const [x0, y0] = sh.trail[i - 1], [x1, y1] = sh.trail[i], a = i / sh.trail.length;
+          ctx.strokeStyle = rgba(sh.color, 0.6 * a); ctx.lineWidth = Math.max(1.5, cell * 0.16 * a);
+          ctx.beginPath(); ctx.moveTo(x0 * cell, (y0 - HIDDEN) * cell); ctx.lineTo(x1 * cell, (y1 - HIDDEN) * cell); ctx.stroke();
+        }
+      }
+      const x = sh.x * cell, y = (sh.y - HIDDEN) * cell;
+      ctx.shadowColor = sh.color; ctx.shadowBlur = cell * 0.8 * dpr;
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, Math.max(2, cell * 0.14), 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+    }
     ctx.restore();
   }
   if (particles.length) {
