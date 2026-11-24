@@ -223,6 +223,8 @@
   body.land .touch{--tb:clamp(38px,6vw,50px); align-items:flex-end}
   body.land .keys, body.land .s-best{display:none}
   body.land .card{padding:9px 12px}
+  body.short .app{padding-top:calc(env(safe-area-inset-top) + 4px); padding-bottom:calc(env(safe-area-inset-bottom) + 4px)}
+  body.short .side{gap:8px}
   body.land .stats{gap:6px 10px}
 
   @media (prefers-reduced-motion: reduce){ body::before{animation:none} }
@@ -1274,7 +1276,7 @@ const DEFAULT_KEYS = {
   pause: ['KeyP', 'Escape'], mute: ['KeyM', null], music: ['KeyB', null],
 };
 const DEFAULT_PAD = {
-  left: [14, null], right: [15, null], soft: [13, null], hard: [12, null], rotL: [1, null], rotR: [0, null],
+  left: [14, null], right: [15, null], soft: [13, null], hard: [12, null], rotL: [0, null], rotR: [1, null],
   mirror: [2, null], hold: [3, 4], pause: [9, null], mute: [null, null], music: [8, null],
 };
 const PAD_LABELS = ['A', 'B', 'X', 'Y', 'LB', 'RB', 'LT', 'RT', 'View', 'Menu', 'LS', 'RS', 'D‑pad ↑', 'D‑pad ↓', 'D‑pad ←', 'D‑pad →', 'Home'];
@@ -1293,6 +1295,12 @@ function loadMap(key, defs) {
 }
 let keyMap = loadMap('pento.keymap', DEFAULT_KEYS), padMap = loadMap('pento.padmap', DEFAULT_PAD);
 const saveMaps = () => { store.set('pento.keymap', JSON.stringify(keyMap)); store.set('pento.padmap', JSON.stringify(padMap)); };
+// One-time update: controllers now rotate left on A and right on B. Saved bindings that still
+// match the old defaults (B left, A right) are swapped; custom layouts are left alone.
+if (!store.get('pento.padrot2')) {
+  if (padMap.rotL[0] === 1 && padMap.rotR[0] === 0) { padMap.rotL[0] = 0; padMap.rotR[0] = 1; saveMaps(); }
+  store.set('pento.padrot2', '1');
+}
 const actionForKey = code => { for (const [a] of ACTIONS) if (keyMap[a].includes(code)) return a; return null; };
 const K = a => keyMap[a].filter(Boolean).map(keyLabel);           // labels for an action's keys
 const P = a => padMap[a].filter(v => v != null).map(padLabel);
@@ -1517,8 +1525,9 @@ function layout() {
   const touch = (matchMedia('(pointer: coarse)').matches || W < 640) && !padActive;
   const stack = W < 700 && H >= W * 1.15;
   const land = touch && !stack && W > H && H < 560;
+  const short = !stack && W > H && H < 560;          // phone held sideways (touch or controller)
   const B = document.body.classList;
-  B.toggle('touch-ui', touch); B.toggle('stack', stack); B.toggle('land', land);
+  B.toggle('touch-ui', touch); B.toggle('stack', stack); B.toggle('land', land); B.toggle('short', short);
   const gap = stack ? 8 : W < 900 ? 14 : 22;
   gameEl.style.setProperty('--gap', gap + 'px');
 
@@ -1533,7 +1542,9 @@ function layout() {
   } else {
     const r = gameEl.getBoundingClientRect();
     const minSide = land ? Math.min(230, W * 0.25) : (W < 900 ? 124 : 160);
-    cell = Math.floor(Math.min((r.width - 2 * minSide - 2 * gap) / COLS, r.height / ROWS));
+    const fit = Math.min((r.width - 2 * minSide - 2 * gap) / COLS, r.height / ROWS);
+    // Sideways phones: snap to device pixels instead of whole CSS pixels to use every bit of height.
+    cell = short ? Math.floor(fit * dpr) / dpr : Math.floor(fit);
     cell = clamp(cell, 8, 46);
     const side = Math.min(land ? 260 : 200, Math.max(minSide, (r.width - cell * COLS - 2 * gap) / 2));
     gameEl.style.setProperty('--side', side + 'px');
